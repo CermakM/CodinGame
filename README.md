@@ -1,2 +1,4 @@
 # CodinGame
-Solution for CodinGame  written in C++
+Solution for CodinGame tasks
+
+Try it yourself at https://www.codingame.com/home!
