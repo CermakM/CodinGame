@@ -1,5 +1,4 @@
 #include <iostream>
-#include <string>
 #include <vector>
 #include <stack>
 #include <unordered_map>
@@ -10,6 +9,7 @@ using std::cerr; using std::cin; using std::cout; using std::endl;
 using Graph = std::unordered_map< int, std::vector<int>>; // map<vertex_id, vector_of_child_vertecies>
 using Node  = std::tuple<int,int,int>; // tuple<vertex_id, parent_vertex_id, distance>
 
+// Find the maximum depth of the graph using depth first search
 int dfs(Graph& graph, int const& init_node) {
     std::stack<Node> node_stack;
     node_stack.push(Node{init_node, init_node, 0});
