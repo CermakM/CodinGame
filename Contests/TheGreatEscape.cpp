@@ -27,6 +27,13 @@ bool contains(const std::vector<T> & vec, const T& value) {
             return true;
     return false;
 }
+template<class T>
+bool contains(const std::deque<T> & vec, const T& value) {
+    for (auto & e : vec)
+        if (e == value)
+            return true;
+    return false;
+}
 
 template<class T>
 bool match(const T& x, const T& y, const T& xx, const T& yy) {
@@ -70,8 +77,9 @@ struct Field {
     Field (const int& w, const int& h);
     Node* operator() (const int& x, const int& y);
 
-    bool trackWall(Dragon * const dragon, std::deque<Node*>::iterator first, std::deque<Node*>::iterator last);
-    bool placeWall(const int& wallX, const int& wallY, char const & orientation, bool testOn = true);
+	bool WallFinder(Dragon* const my_dragon, Dragon* const op_dragon);
+    std::tuple<double, Node*, char> trackWall(unsigned index, Dragon * const my_dragon, Dragon * const op_dragon);
+    bool placeWall(Desk& s_matrix, const int& wallX, const int& wallY, char const & orientation, bool testOn = true);
     void move(Dragon* const dragon, const int & t_x, const int& t_y);
     /* Using backtracking to track subgoals */
     void backtrackPath(Dragon *const dragon, Node* const parent);
@@ -127,7 +135,7 @@ int main() {
             char wallOrientation; // wall orientation ('H' or 'V')
             cin >> wallX >> wallY >> wallOrientation;
             cin.ignore();
-            field.placeWall(wallX, wallY, wallOrientation, false);
+            field.placeWall(field.matrix, wallX, wallY, wallOrientation);
         }
 
         // Compute the goal distance for each dragon; update node utilities
@@ -140,12 +148,17 @@ int main() {
             dragon->g_nodes = std::deque<Node*> ();
             if (my_dragon->wall_count || dragon==my_dragon) {
                 field.backtrackPath(dragon, field(dragon->x, dragon->y));
+                cerr << "Dragon " << dragon->id << " goal nodes: " << "\t";
+                for (Node* const node : dragon->g_nodes)
+                    cerr << node->x << node->y << " " ;
+                cerr << endl;
+                
                 field.trackPath(dragon, dragon->g_nodes.begin(), dragon->g_nodes.begin() + 1);
+                cerr << "Dragon " << dragon->id << " final goal nodes:  ";
+                for (Node* const node : dragon->g_nodes)
+                    cerr << node->x << node->y << " " ;
+                cerr << endl;
             }
-            cerr << "Dragon " << dragon->id << " goal nodes: " << "\t";
-            for (Node* const node : dragon->g_nodes)
-                cerr << node->x << node->y << " " ;
-            cerr << endl;
             cerr << " Dragons g_dists: " << dragon->g_dist << " < " << my_dragon->g_dist << endl;
             if ( (dragon->g_dist < danger_dragon->g_dist) || (dragon->g_dist == danger_dragon->g_dist && dragon->id < danger_dragon->id))
                 danger_dragon = dragon;
@@ -155,22 +168,17 @@ int main() {
         // Estimate danger node where the danger dragon moves next
         cerr << "Danger dragon: " << danger_dragon->id << " : " << danger_dragon->x << danger_dragon->y << endl;
 
-        Node *danger_node = danger_dragon->g_nodes.at(1);
-        cerr << "Danger node: " << danger_node->x << danger_node->y << endl;
-
         // Place the wall or move if my utility is higher
-        if (danger_dragon->id != my_dragon->id) {
+        if (danger_dragon != my_dragon) {
             // TODO: Compute the best possible place for the wall
-            if (field.trackWall(danger_dragon, danger_dragon->g_nodes.begin(), danger_dragon->g_nodes.end()))
+            if (field.WallFinder(my_dragon, danger_dragon))
                 continue;
             else danger_dragon = my_dragon; // Else switch back to my dragon and move anyway;
         }
-
-        cerr << "Dragon " << danger_dragon->id << " final goal nodes:  ";
-        for (Node* const node : danger_dragon->g_nodes)
-            cerr << node->x << node->y << " " ;
-        cerr << endl;
-
+        
+        Node *danger_node = danger_dragon->g_nodes.at(1);
+        cerr << "Danger node: " << danger_node->x << danger_node->y << endl;
+        
         // Output direction
         std::string dir_x[2] = {"LEFT", "RIGHT"};
         std::string dir_y[2] = {"UP",   "DOWN" };
@@ -229,67 +237,111 @@ Node* Field::operator() (const int& x, const int& y) {
     return nullptr;
 }
 
-bool Field::trackWall(Dragon * const my_dragon, Dragon* const op_dragon) {
-    cerr << "Tracking wall position for dragon : " << dragon->id << endl;
+bool Field::WallFinder(Dragon* const my_dragon, Dragon* const op_dragon) {
+
+	std::tuple<double, Node*, char> wall {std::numeric_limits<double>::infinity(), nullptr, 0};
+	for (int i = 0; i < op_dragon->g_nodes.size() -2; i++) {
+		std::tuple<double, Node*, char> temp_wall = trackWall(i, my_dragon, op_dragon);
+		Node* wall_node = std::get<1>(temp_wall);
+		if (!wall_node) continue;
+		cerr << " current utility for wall: " << wall_node->x << wall_node->y << std::get<2>(temp_wall) << " is: " << std::get<0>(temp_wall) << " max util: " << std::get<0>(wall) << endl;
+		if ( std::get<0> (temp_wall) < std::get<0>(wall) ) {
+			wall = temp_wall;
+		}
+	}
+
+	Node* target_node = std::get<1>(wall);
+	if (!target_node) return false;
+
+	placeWall(matrix, target_node->x, target_node->y, std::get<2>(wall), false);
+	return true;
+}
+
+std::tuple<double, Node*, char> Field::trackWall(unsigned index, Dragon * const my_dragon, Dragon* const op_dragon) {
+    cerr << "Tracking wall position for dragon : " << op_dragon->id << endl;
+
+    // Base condition
+    if (op_dragon->g_nodes.size() - 2 <= index) { 
+    	return std::make_tuple(std::numeric_limits<double>::infinity(), nullptr, 0); 
+    }
 
     // Create test matrix
     Desk t_matrix(matrix);
 
+    // Create test dragons 
+    Dragon m_dragon = *my_dragon;
+    Dragon o_dragon = *op_dragon;
+
+    m_dragon.g_nodes.clear(); o_dragon.g_nodes.clear();
     // Make copies of the goal vectors and link them with the test matrix
-    std::vector < Node * > op_nodes, my_nodes;
     for (int i = 0; i < op_dragon->g_nodes.size(); i++) {
         Node *node = op_dragon->g_nodes[i];
-        op_nodes.push_back(&t_matrix[node->x][node->y]);
+        o_dragon.g_nodes.push_back(&t_matrix[node->y][node->x]);
     }
     for (int i = 0; i < my_dragon->g_nodes.size(); i++ ) {
         Node *node = my_dragon->g_nodes[i];
-        my_nodes.push_back(&t_matrix[node->x][node->y]);
-    }
-    int max_utility = 0;
-    for ( std::vector<Node*>::iterator it = op_nodes.begin(); it != op_nodes.end() - 1; it++) {
-        Node* node = *it;
-        Node* next_node = *(it + 1);
-        if (!next_node) break;
-
-        // Find out dragon direction to the next node
-        std::valarray<char> dir_arr  {'H', 'V', 'V', 'H'};
-        std::valarray<bool> mask {node->x > next_node->x, node->y > next_node->y, node->y < next_node->y, node->x < next_node->x};
-        dir_arr = dir_arr[mask];
-        char dir;
-        for (int i = 0; i < dir_arr.size(); i++)
-            if (dir = dir_arr[i]) break;
-
-        // test wall and check how the wall affects op_dragon
-        if (placeWall(t_matrix, node->x, node->y, dir))
-            
-
-        // Check if the node intercepts with my_dragon
+        m_dragon.g_nodes.push_back(&t_matrix[node->y][node->x]);
     }
 
+    Node* node = o_dragon.g_nodes.at(index);
+    Node* next_node = o_dragon.g_nodes.at(index+1);
+        
+   // Find out dragon direction to the next node
+    std::valarray<char> orientation_arr  {'V', 'H', 'H', 'V'};
+    std::valarray<bool> mask {node->x > next_node->x, node->y > next_node->y, node->y < next_node->y, node->x < next_node->x};
+    orientation_arr = orientation_arr[mask];
+    char orientation;
+    for (int i = 0; i < orientation_arr.size(); i++)
+        if (orientation = orientation_arr[i]) break;
+
+    // test wall and check how the wall affects op_dragon
+	// set up diffs for multiple checks
+	int y_offset = abs(next_node->x - node->x);
+	int x_offset = abs(next_node->y - node->y);
+	Node* wall_node = nullptr;
+	if (placeWall(t_matrix, node->x, node->y, orientation)){
+		wall_node = node;
+	}	
+	else if (placeWall(t_matrix, node->x - x_offset, node->y - y_offset, orientation)){
+		wall_node = &t_matrix[node->y - y_offset][node->x - x_offset];
+	}	
+
+	if (!wall_node)	return std::make_tuple(std::numeric_limits<double>::infinity(), nullptr, 0);
+
+	trackPath(&o_dragon, o_dragon.g_nodes.begin() + index, o_dragon.g_nodes.begin() + index + 1);
+
+    // Check if the wall intercepts with my_dragon
+    if (contains<Node*> (m_dragon.g_nodes, node) || contains<Node*> (m_dragon.g_nodes, wall_node)) {
+    	trackPath(&m_dragon, m_dragon.g_nodes.begin() + index, m_dragon.g_nodes.begin() + index + 1);
+    }
+    
+    // DEBUG
+    cerr << " Dragon " << o_dragon.id << " new goal nodes:  ";
+    for (Node* const node : o_dragon.g_nodes)
+        cerr << node->x << node->y << " " ;
+    cerr << endl;
+    
     // Minimize the effect on my dragon ~ maximize utility of the wall
-
-
-    // Utility is the difference of how the wall affects my dragon and opponents dragon
-    int current_utility = abs(op_nodes.size() - op_dragon->g_nodes.size()) - abs(my_nodes.size() - my_dragon->g_nodes.size());
+	return std::make_tuple(o_dragon.g_dist - m_dragon.g_dist, wall_node, orientation);
 }
 
 // TODO: Optimize algorithm for placing walls
 bool Field::placeWall(Desk& s_matrix, const int& wallX, const int& wallY, char const & orientation, bool testOn) {
     if (orientation == 'V') {
         if (!inRange<int>(0, s_matrix.size()-1, {wallX-1, wallY+1})) return false;
-        if (!s_matrix[wallY][wallX]->mask[3] || !s_matrix[wallY+1][wallX]->mask[3]) return false;
-        s_matrix[wallY][wallX]->mask.flip(3);
-        s_matrix[wallY+1][wallX]->mask.flip(3);
-        s_matrix[wallY][wallX-1]->mask.flip(0);
-        s_matrix[wallY+1][wallX-1]->mask.flip(0);
+        if (!s_matrix[wallY][wallX].mask[3] || !s_matrix[wallY+1][wallX].mask[3]) return false;
+        s_matrix[wallY][wallX].mask.flip(3);
+        s_matrix[wallY+1][wallX].mask.flip(3);
+        s_matrix[wallY][wallX-1].mask.flip(0);
+        s_matrix[wallY+1][wallX-1].mask.flip(0);
     }
     else if (orientation == 'H') {
         if (!inRange<int>(0, s_matrix.size()-1, {wallX+1, wallY-1})) return false;
-        if (!s_matrix[wallY][wallX]->mask[2] || !s_matrix[wallY][wallX+1]->mask[2]) return false;
-        s_matrix[wallY][wallX]->mask.flip(2);
-        s_matrix[wallY][wallX+1]->mask.flip(2);
-        s_matrix[wallY-1][wallX]->mask.flip(1);
-        s_matrix[wallY-1][wallX+1]->mask.flip(1);
+        if (!s_matrix[wallY][wallX].mask[2] || !s_matrix[wallY][wallX+1].mask[2]) return false;
+        s_matrix[wallY][wallX].mask.flip(2);
+        s_matrix[wallY][wallX+1].mask.flip(2);
+        s_matrix[wallY-1][wallX].mask.flip(1);
+        s_matrix[wallY-1][wallX+1].mask.flip(1);
     }
 
     if (!testOn) cout << wallX << " " << wallY << " " << orientation << endl;
@@ -342,7 +394,7 @@ void Field::backtrackPath(Dragon *const dragon, Node* const parent) {
 bool Field::trackGoal(Dragon *const dragon, Node *const parent) {
     std::array<int,2>* g_c = &dragon->target;
     int p_c[2] = { parent->x, parent->y };
-    cerr << "Dragon direction " << dragon->direction << endl;
+    // cerr << "Dragon direction " << dragon->direction << endl;
     if (p_c[dragon->direction] == g_c->at(dragon->direction)) {
         dragon->g_dist = 0;
         parent->g_dist.at(dragon->id) = 0;
@@ -388,9 +440,9 @@ bool Field::trackGoal(Dragon *const dragon, Node *const parent) {
         if (diff) return diff < 0;
         else return n1->mask.count() > n2->mask.count(); // else sort by potential of the node
     });
-    for (auto & node : line)
-        cerr << node->x << node->y << " " ;
-    cerr << endl;
+    // for (auto & node : line)
+    //     cerr << node->x << node->y << " " ;
+    // cerr << endl;
 
     for ( Node* const node : line) {
         Node* next_node = dragon->id < 2 ? &matrix[node->y][node->x + dragon->increment]
@@ -426,7 +478,7 @@ void Field::trackPath(Dragon* const dragon, std::deque<Node*>::iterator start, s
     deque.push_back(parent);
     while (!deque.empty()) {
         parent = deque.front(); deque.pop_front();
-        cerr << "Opening node : " << parent->x << parent->y << endl;
+        // cerr << "Opening node : " << parent->x << parent->y << endl;
         // Moving goal node if not goal node specified
 //        if (!goal_node) goal_node = dragon->id > 2 ? this->operator()(parent->x, (int)g_c->at(dragon->direction))
 //                                                   : this->operator()((int)g_c->at(dragon->direction), parent->y);
@@ -436,7 +488,7 @@ void Field::trackPath(Dragon* const dragon, std::deque<Node*>::iterator start, s
         }
         std::deque<Node*>::iterator head = deque.begin();
         for (Node* const node : getNeighbours(parent)) {
-            cerr << " Checking node : " << node->x << node->y  << endl;
+            // cerr << " Checking node : " << node->x << node->y  << endl;
             node->g_dist.at(dragon->id) = distance<int>((*goal)->x, (*goal)->y, node->x, node->y);
             // cerr << node->g_dist.at(dragon->id) << " <= " << parent->g_dist.at(dragon->id) << endl;
             // cerr << parent->steps.at(dragon->id) +1 << " < " << node->steps.at(dragon->id) << endl;
