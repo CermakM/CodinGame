@@ -19,15 +19,15 @@ public:
     Point() { x = -1; y = -1; }
     Point(const int& x_, const int& y_) { x = x_; y = y_; }
     Point pointOn(Point::PDir direction); 
-    bool isDownFrom(const Point& other) const { return x == other.x && y < other.y; }
-    bool isFarDownFrom(const Point& other) const { return y < other.y; }
-    bool isUpFrom(const Point& other) const { return x == other.x && y > other.y; }
-    bool isFarUpFrom(const Point& other) const { return y > other.y; } 
+    bool isDownFrom(const Point& other) const { return x == other.x && y > other.y; }
+    bool isFarDownFrom(const Point& other) const { return y > other.y; }
+    bool isUpFrom(const Point& other) const { return x == other.x && y < other.y; }
+    bool isFarUpFrom(const Point& other) const { return y < other.y; } 
     bool isRightFrom (const Point& other) const  { return y == other.y && x > other.x; }
-    bool isFarRight(const Point& other) const { return x > other.x; }
+    bool isFarRightFrom(const Point& other) const { return x > other.x; }
     bool isLeftFrom(const Point& other) const { return y == other.y && x < other.x; } 
     bool isFarLeftFrom(const Point& other) const { return x < other.x; }
-    PDir whereIs(const Point& other) { if (other.isFarLeftFrom(*this)) return LEFT; if (other.isFarRight(*this)) return RIGHT; if (other.isFarUpFrom(*this)) return UP; if(other.isFarDownFrom(*this)) return DOWN; return HERE;}
+    PDir whereIs(const Point& other) { if (other.isFarLeftFrom(*this)) return LEFT; if (other.isFarRightFrom(*this)) return RIGHT; if (other.isFarUpFrom(*this)) return UP; if(other.isFarDownFrom(*this)) return DOWN; return HERE;}
     Point operator - (const Point& other) { return Point( x - other.x, y - other.y);}
     Point operator + (const Point& other) { return Point( x + other.x, y + other.y);}
     double distanceTo (const Point& other) { return sqrt(pow(x - other.x,2 ) + pow(y - other.y, 2)); }
@@ -42,12 +42,15 @@ public:
 class Node : public Point {
 public:
     Node() { }
-    Node(const int& x_, const int& y_) : Point(x_,y_) {};
+    Node(const int& x_, const int& y_) : Point(x_,y_) { };
     bool isClosed() const { return closed; } 
+    bool isOpened() const { return opened; }
 
     bool closed = false;
+    bool opened = false;
+    double gScore = std::numeric_limits<double>::infinity();
+    double fScore;
     Node* previous = nullptr;
-    double steps = std::numeric_limits<double>::infinity();
 };
 
 
@@ -65,6 +68,7 @@ struct Link {
 
 struct Board {
     Board();
+    enum AccessOption { ALL, ACCESSIBLE, INACCESSIBLE };
     Node* nodeAt(const Point& p) { if (p.inRange()) return &nodes[p.y].at(p.x); else return nullptr; }
     Node* nodeAt(const int& x, const int& y) { if (Point(x,y).inRange()) return &nodes[y][x]; else return nullptr; }
     std::shared_ptr<Link> getLink (Node* const inNode, Node* const outNode) { uint hash = Link::getHash(inNode, outNode); if(links.count(hash)) return links.at(hash); else return nullptr; }
@@ -74,16 +78,18 @@ struct Board {
     // Node* getLinkedNode(Node* const this_node);  
     std::vector<std::shared_ptr<Link>> getLinksByNode(Node* const node);
     std::vector<Node*> getNeighbours(Node* const node) ;
-    std::vector<Node*> getCol(const uint& index) ;
-    std::vector<Node*> getRow(const uint& index) ;   
     // std::vector<Node*> followLink(const Link& link);
 
     void placeWall(const Point& p, const char& orientation);
     Link::LState linkState(Node* const inNode, Node* const outNode) { return links.at(Link::getHash(inNode, outNode))->state;}
 
+    double heuristicCostEstimate(Node* const start, Node* const target) { return start->distanceTo(*target) + double( wall_count ) * (this->player_count - 1);}
+
     std::unordered_map<uint, std::shared_ptr<Link>> links;
     std::vector<Node> nodes[9];
     const uint width = 9, height = 9;
+    uint wall_count = 0;
+    uint player_count = 2;
 };
 
 
@@ -94,17 +100,16 @@ public:
     bool findWall(Board& board, const Player& target) {}
     /* Tracks utility of the wall */
     bool trackWall(Board& board, const Point& p) {}
-    /* Tracks a position of the closest target */
-    bool trackGoal(Board& board, Node* const c_node);
     /* Finds a path to the target */
     void findPath(Board board);
+    void setClosestTarget(Node* const node);
     void getDirection();
 
-    int id;
+    short id;
     Point pos;
     Node target;
     Point::PDir direction;
-    int wall_count;
+    uint wall_count;
     std::vector<Node*> g_nodes;
 };
 
@@ -180,21 +185,6 @@ std::vector<Node*> Board::getNeighbours(Node* const node) {
     return n;
 }
 
-std::vector<Node*> Board::getRow(const uint& index) {
-    std::vector<Node*> vec;
-    for (Node& node : nodes[index])
-        vec.push_back(&node);
-    return vec;
-}  
-    
-std::vector<Node*> Board::getCol(const uint& index) {
-    std::vector<Node*> n;
-    for (int y = 0; y < height; y++) {
-        n.push_back(nodeAt(index, y));
-    }
-    return n;
-}
-
 std::vector<std::shared_ptr<Link>> Board::getLinksByNode(Node* const node) {
     std::vector<std::shared_ptr<Link>> link_vec;
     for (Node* const n : getNeighbours(node)) {
@@ -267,82 +257,72 @@ Player::Player(const int& id_) {
     }
 }
 
-bool Player::trackGoal(Board& board, Node* const c_node) {
-    Point c_point;
-    std::vector<Node*> target_line, current_line;
-    // cerr << "Tracking node: " << *c_node << endl;
-    if (this->id < 2) {
-        c_point = direction == Point::RIGHT ? c_node->pointOn(Point::RIGHT) : c_node->pointOn(Point::LEFT); 
-        if (!c_point.inRange()) return true; // Goal found
-        target_line = board.getCol(c_point.x);
-        current_line = board.getCol(c_node->x);
-    }
-    else {
-        c_point = direction == Point::UP ? c_node->pointOn(Point::UP) : c_node->pointOn(Point::DOWN); 
-        if (!c_point.inRange()) return true; // Goal found
-        target_line = board.getRow(c_point.y);
-        current_line = board.getRow(c_node->y);
+
+void Player::findPath(Board board) {
+
+    std::vector<Node*> openSet;
+    Node* parent = board.nodeAt(pos);
+    
+    // Complete heuristic for the first node
+    this->setClosestTarget(parent);
+    parent->fScore = board.heuristicCostEstimate(parent, &this->target);
+
+    openSet.push_back(parent);
+
+    Node* previously_opened = nullptr;
+    while (!openSet.empty()) {
+        parent = openSet.back();
+        cerr << "Current parent node: " << *parent << endl;
+
+        if ( *parent == this->target ) 
+            break; // Target reached    
+        
+        parent->closed = true;
+        openSet.pop_back();
+        parent->opened = false;
+        
+        // Set up potentially closest target
+        this->setClosestTarget(parent);
+
+        // if (direction == Point::LEFT && parent->isFarLeftFrom(this->target)) { parent->closed = true; continue; }
+        // if (direction == Point::RIGHT && parent->isFarRightFrom(this->target)) { parent->closed = true; continue; }
+        // if (direction == Point::UP && parent->isFarUpFrom(this->target)) { parent->closed = true; continue; }
+        // if (direction == Point::DOWN && parent->isFarDownFrom(this->target)) { parent->closed = true; continue; }
+
+
+
+        for ( Node* const child : board.getNeighbours(parent)) {
+            if (child->isClosed()) continue;
+            uint tentative_gScore = parent->gScore + 1;
+            if (!child->isOpened()) {
+                openSet.push_back(child);
+                child->opened = true;
+            }
+            if (tentative_gScore >= child->gScore) continue;
+            child->gScore = tentative_gScore;
+            child->previous = parent;
+            child->fScore = tentative_gScore + board.heuristicCostEstimate(child, &this->target);
+            // cerr << "  Pushing back child: " << *child << endl;
+        }
+        // Minimize the fScore decreasingly
+        std::sort(openSet.begin(), openSet.end(), [] (Node* const n1, Node* const n2) { return n1->fScore > n2->fScore;});
     }
     
-    // DEBUG
-    // for (auto & node : target_line) 
-    //     cerr << *node << endl;
-
-    // Sort by distance from the central point
-    std::sort(target_line.begin(), target_line.end(), [&c_node] (Node* const p1, Node* const p2) { return p1->distanceTo(*c_node) < p2->distanceTo(*c_node); });
-    std::sort(current_line.begin(), current_line.end(), [&c_node] (Node* const p1, Node* const p2) { return p1->distanceTo(*c_node) < p2->distanceTo(*c_node); });
-
-    // Find the shortest path to the goal and sets up target as the closest goal in the next line
-    for (int i = 0; i < current_line.size(); i++) {
-        Node* target_node = target_line.at(i);
-        if (board.getLink(current_line.at(i), target_node)->state == Link::FUNCT) {
-            // cerr << "Opening next line on node: " << *target_node << endl;
-            if ( trackGoal(board, target_node) ) {
-                this->target = *target_node;
-                return true;
-            }
-        }
+    this->g_nodes.push_back(parent);
+    while (parent = parent->previous) {
+        this->g_nodes.push_back(parent);
     }
-
-    return false;
+    
+    this->target = *this->g_nodes.at(g_nodes.size() - 2);
+    cerr << "Final target: " << this->target << endl;
 }
 
-// void Player::findPath(Board board) {
-//     std::deque<Node*> queue;
-//     Node* parent = board.nodeAt(pos);
-//     parent->steps = 0;
-//     queue.push_front(parent);
-
-//     std::deque<Node*>::iterator tail = queue.end();
-//     while (!queue.empty()) {
-//         parent = queue.front(); queue.pop_front();
-//         cerr << "Current parent node: " << *parent << endl;
-//         if (direction == Point::LEFT && parent->isFarLeftFrom(this->target)) { parent->closed = true; continue; }
-//         if (direction == Point::RIGHT && parent->isFarRight(this->target)) { parent->closed = true; continue; }
-//         if (direction == Point::UP && parent->isFarUpFrom(this->target)) { parent->closed = true; continue; }
-//         if (direction == Point::DOWN && parent->isFarDownFrom(this->target)) { parent->closed = true; continue; }
-
-//         if ( *parent == this->target ) 
-//             break; // Target reached, check for shorter paths
-
-//         for ( Node* const child : board.getNeighbours(parent)) {
-//             if (child->isClosed() || child->steps <= parent->steps + 1) continue;
-//             child->steps = parent->steps + 1;
-//             child->previous = parent;
-//             queue.push_back(child);
-//             cerr << "  Pushing back child: " << *child << endl;
-//         }
-//         parent->closed = true;
-
-//         // std::sort(tail, queue.end(), [this] (Node* const p1, Node* const p2) { return p1->distanceTo(this->target) < p2->distanceTo(this->target); });
-//     }
-    
-//     while (parent = parent->previous) {
-//         if ( *parent != this->pos ) this->target = *parent;
-//     }
-    
-//     cerr << "Final target: " << this->target << endl;
-// }
+void Player::setClosestTarget(Node* const node) {
+    if (direction == Point::UP) this->target = Node(node->x, 0);
+    else if ( Point::DOWN == direction) this->target = Node(node->x, 8);
+    else if ( Point::LEFT == direction) this->target = Node(0, node->y);
+    else if ( Point::RIGHT == direction) this->target = Node(8, node->y);
+}
 
 void Player::getDirection() {
     if (this->pos.isRightFrom(this->target)) cout << "LEFT" << endl;
@@ -360,7 +340,7 @@ int main()
     int w, h, playerCount, myId;
     cin >> w >> h >> playerCount >> myId; cin.ignore();
 
-    Board board;
+    Board board; board.player_count = 4;
     std::vector<Player> players { Player(0), Player(1), Player(2), Player(3) };
     Player& my_player = players.at(myId);
     
@@ -371,20 +351,17 @@ int main()
             cin >> x >> y >> walls_left; cin.ignore();
             players[i].pos = Point(x,y);
             players[i].wall_count = walls_left;
-            if (i == myId) {
-                my_player.trackGoal(board, board.nodeAt(my_player.pos));
-                cerr << "Subtarget for player: " << i << " " << my_player.target << endl;
-                my_player.findPath (board);
-            }
         }
         int wallCount; // number of walls on the board
         cin >> wallCount; cin.ignore();
+        board.wall_count = wallCount;   
         for (int i = 0; i < wallCount; i++) {
             int x,y; char orientation; // x,y-coordinate of the wall
             cin >> x >> y >> orientation; cin.ignore();
             board.placeWall(Point(x,y), orientation);
         }
     
+        my_player.findPath (board);
         my_player.getDirection();
     }
 }
