@@ -7,11 +7,21 @@
 #include <memory>
 #include <unordered_map>
 #include <utility>
+#include <initializer_list>
 
 using std::cerr; using std::cin; using std::cout; using std::endl;
 
+template<class T, class U> bool contains(std::vector<T>& v, std::initializer_list<U> args) {
+    for (auto const& item : v) 
+        for ( auto const& arg : args ) 
+            if (arg == e ) return true;
+
+    return false;
+}
+
 
 /* DECLARATIONS */
+
 
 class Point {
 public: 
@@ -47,9 +57,12 @@ public:
 
 struct Wall
 {
+    Wall() { x = -1; y = -1; orientation = 0; }
+    Wall(const Wall& w);
     Wall(const Point& p, const char& orientation_);
     Wall(const uint& x_, const uint& y_, const char& orientation_);
     bool hasIntersection(const Wall& other) const;
+    friend std::ostream& operator << (std::ostream& os, const Wall& w) { return os << w.x << " " << w.y << " " << w.orientation ; }
 
     uint x, y;
     char orientation;
@@ -105,7 +118,9 @@ struct Board {
     std::vector<Node*> getNeighbourNodes(const Wall& wall);
     double heuristicCostEstimate(Point const& start, Point const& target, uint const& players_walls);
 
+    void placeWall(const Wall& w);
     void placeWall(const Point& p, const char& orientation);
+    void removeWall(const Wall& w);
     void removeWall(const Point& p, const char& orientation);
     bool isValidWall(const Wall& wall) ;
 
@@ -164,6 +179,13 @@ Point Point::pointOn(PDir direction) {
         case DOWN:
             return Point(x, y+1);
     }
+}
+
+Wall::Wall(const Wall& w) {
+    x = w.x; y = w.y;
+    orientation = w.orientation;
+    first = w.first;
+    second = w.second;
 }
 
 Wall::Wall(const Point& p, const char& orientation_) {
@@ -306,13 +328,38 @@ bool Board::isValidWall(const Wall& wall) {
     
     std::vector<Node*> danger_nodes = { nodeAt(wall.first), nodeAt(wall.second) };
     for (auto const node : danger_nodes) {
+        cerr << " Checking intersection with node: " << *node << endl;
         auto v_wall = node->wall['V'];
         if ( v_wall && v_wall->hasIntersection(wall) ) return false;
         auto h_wall = node->wall['H'];
         if ( h_wall && h_wall->hasIntersection(wall) ) return false;
     }
-        
+    
+    cerr << " VALID " << endl;
     return true;
+}
+
+void Board::placeWall(const Wall& w) {
+    Node* c_node = nodeAt(w.first);
+    // If the wall has already been accounted for, return
+    if ( c_node->wall[w.orientation] ) return;
+    
+    auto wall = std::make_shared<Wall> ( Wall(w) );
+    c_node->wall[w.orientation] = wall;
+    walls.push_back(wall);
+    if (w.orientation == 'V') {
+        // TODO: Instead of disabling / removing links, try to bridge them to shorten path search
+        disableLink(c_node, nodeAt(c_node->pointOn(Point::LEFT)));
+        Node* c_node_bottom = nodeAt(w.second);
+        disableLink(c_node_bottom, nodeAt(c_node_bottom->pointOn(Point::LEFT)));
+        c_node_bottom->wall[w.orientation] = wall;
+    }
+    else {
+        disableLink(c_node, nodeAt(c_node->pointOn(Point::UP)));
+        Node* c_node_right = nodeAt(w.second);
+        disableLink(c_node_right, nodeAt(c_node_right->pointOn(Point::UP)));
+        c_node_right->wall[w.orientation] = wall;
+    }
 }
 
 void Board::placeWall(const Point& p, const char& orientation){
@@ -364,6 +411,33 @@ void Board::removeWall(const Point& p, const char& orientation){
     }
 }
 
+
+void Board::removeWall(const Wall& w){
+    Node* c_node = nodeAt(w.first);
+    c_node->wall[w.orientation] = nullptr;
+
+    for (auto it = walls.begin(); it != walls.end(); it++) {
+        if ((*it)->first == w.first && (*it)->orientation == w.orientation) {
+            walls.erase(it);
+            break;
+        }
+    }
+
+    if (w.orientation == 'V') {
+        // TODO: Instead of disabling / removing links, try to bridge them to shorten path search
+        enableLink(c_node, nodeAt(c_node->pointOn(Point::LEFT)));
+        Node* c_node_bottom = nodeAt(w.second);
+        enableLink(c_node_bottom, nodeAt(c_node_bottom->pointOn(Point::LEFT)));
+        c_node_bottom->wall[w.orientation] = nullptr;
+    }
+    else {
+
+        enableLink(c_node, nodeAt(c_node->pointOn(Point::UP)));
+        Node* c_node_right = nodeAt(w.second);
+        enableLink(c_node_right, nodeAt(c_node_right->pointOn(Point::UP)));
+        c_node_right->wall[w.orientation] = nullptr;
+    }
+}
 
 uint Link::getHash(Node* const inNode, Node* const outNode) { 
     std::string s; 
@@ -447,7 +521,7 @@ bool Player::findPath(Board board) {
     }
     
     this->target = this->g_nodes.at(g_nodes.size() - 2);
-    cerr << "Final target for player " << this->id << ": " << this->target << endl;
+    // cerr << "Final target for player " << this->id << ": " << this->target << endl;
 
     return true;
 }
@@ -486,50 +560,58 @@ bool Player::hasEscapePath(Board board, Wall const& closing_wall) {
 bool Player::getWallPosition(Board board, const Player& target_player) {
 
     // TODO: minimax algorithm
-    char wall_or[2] { 'H', 'V' };
+    char wall_or[2] { 'H', 'V' };   
     std::unordered_map<char, Point> wall_offset { {'H', Point(-1,0) }, {'V', Point(0,-1)}};
+    std::pair<int, Wall> current_best { 0, Wall() };
 
-    for ( auto it = target_player.g_nodes.rbegin(); it != target_player.g_nodes.rend() - 1; it++) {
-        Node c_node = *it; Node n_node = *(it + 1);
-        Player test_player = target_player;
+    for ( auto it = target_player.g_nodes.begin(); it != target_player.g_nodes.end() - 1; it++) {
         
+        Node c_node = *it; Node n_node = *(it + 1);
         char orientation = wall_or[c_node.isHorizontaly(n_node)];
-
+        Wall test_wall, test_wall_moved;
+        Node test_node;
         if ( Point::LEFT == c_node.whereIs(n_node) || Point::UP == c_node.whereIs(n_node) ) {
-            Wall test_wall(c_node, orientation);
-            Wall test_wall_moved(c_node + wall_offset[orientation], orientation);
-            if ( board.isValidWall(test_wall) ) {
-                if (test_player.hasEscapePath(board, test_wall)) { 
-                    cout << c_node << " " << orientation << endl;
-                    return true;
-                }
-            }
-            // if ( board.isValidWall(test_wall_moved) ) {
-            //      if (test_player.hasEscapePath(board, test_wall_moved)) { 
-            //         cout << c_node + wall_offset[orientation] << " " << orientation << endl;
-            //         return true;
-            //     }
-            // }
+            test_node = c_node;
+            test_wall = Wall(c_node, orientation);
+            test_wall_moved = Wall(c_node + wall_offset[orientation], orientation);
         }
         else {
-            Wall test_wall(n_node, orientation);
-            Wall test_wall_moved(n_node + wall_offset[orientation], orientation);
-            if ( board.isValidWall(test_wall) ) {
-                if (test_player.hasEscapePath(board, test_wall)) {
-                cout << n_node << " " << orientation << endl;
-                return true;  
-                } 
+            test_node = n_node;
+            test_wall = Wall(n_node, orientation);
+            test_wall_moved = Wall(n_node + wall_offset[orientation], orientation);
+        }
+
+        Player test_player = target_player;
+        if ( board.isValidWall(test_wall_moved) ) {
+            board.placeWall(test_wall_moved);
+            cerr << " PATH CHECK " << endl;
+            if (test_player.findPath(board)){
+                cerr << " DIFF CHECK " << endl;
+                int diff = test_player.g_nodes.size() - target_player.g_nodes.size() - 2* contains<Node, Point>(this->g_nodes, {test_wall_moved.first, test_wall_moved.second});
+                if (diff > current_best.first) 
+                    current_best = {diff, test_wall_moved};
             }
-            // if ( board.isValidWall(test_wall_moved) ) {
-            //      if (test_player.hasEscapePath(board, test_wall_moved)) { 
-            //         cout << n_node + wall_offset[orientation] << " " << orientation << endl;
-            //         return true;
-            //     }
-            // }
+            board.removeWall(test_wall_moved);
+        }
+        test_player = target_player;
+        if ( board.isValidWall(test_wall) ) {
+            board.placeWall(test_wall);
+            cerr << " PATH CHECK " << endl;
+            if (test_player.findPath(board)) {
+                cerr << " DIFF CHECK " << endl;
+                int diff = test_player.g_nodes.size() - target_player.g_nodes.size() - 2* contains<Node, Point>(this->g_nodes, {test_wall.first, test_wall.second});
+                if (diff > current_best.first) 
+                    current_best = {diff, test_wall};
+            } 
+            board.removeWall(test_wall);
         }
     }
 
-    return false;
+    if ( !current_best.first ) return false;
+
+    cout << current_best.second << endl;
+
+    return true;
 }
 
 /* MAIN GAME */ 
@@ -560,30 +642,28 @@ int main()
             board.placeWall(Point(x,y), orientation);
         }
     
-        // Evaluate danger - count up places
+        // Evaluate danger - count up steps from the target for each player
         int danger_Id;
-        double min_heuristic_distance = std::numeric_limits<double>::infinity();
+        double min_gdist = std::numeric_limits<double>::infinity();
         for ( int id = 0; id < playerCount; id++ ) {
             Player& player = players[id];
             if (!player.isPlaying()) continue;
-            Node& player_node = *board.nodeAt(player.pos);
-            double heuristics = board.heuristicCostEstimate( player_node, player.getClosestTarget(player_node), player.wall_count);
-            cerr << id << " heuristics: " << heuristics << endl;
-            if (heuristics < min_heuristic_distance) {
+            player.findPath(board);
+            uint gdist = player.g_nodes.size();
+            if (gdist < min_gdist) {
                 danger_Id = id;
-                min_heuristic_distance = heuristics;
+                min_gdist = gdist;
             }
+            cerr << "Goal distance for player " << id << " : " << gdist << endl;
         }
 
-        my_player.findPath(board);
         if (danger_Id != my_Id && my_player.wall_count) {
             Player& danger_player = players.at(danger_Id);
-            danger_player.findPath (board);
-            // std::for_each(danger_player.g_nodes.begin(), danger_player.g_nodes.end(), [](Node& node) {cerr << node << "  " ;});
-            // cerr << endl;
+            std::for_each(danger_player.g_nodes.begin(), danger_player.g_nodes.end(), [](Node& node) {cerr << node << "  " ;});
+            cerr << endl;
             if (my_player.getWallPosition(board, danger_player)) continue;
         }
-
+        cerr << "TEST" << endl;
         my_player.getDirection();
     }
 }
